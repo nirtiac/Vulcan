@@ -9,10 +9,11 @@ import json
 import cPickle as pickle
 import numpy as np
 
-import lasagne
-
-import theano
-import theano.tensor as T
+#TODO: import everything needed for tensorflow
+# import lasagne
+#
+# import theano
+# import theano.tensor as T
 
 from utils import get_class
 from utils import display_record
@@ -71,11 +72,12 @@ class Network(object):
         self.learning_rate = learning_rate
         self.init_learning_rate = learning_rate
         self.stopping_rule = stopping_rule
-        if not optimizers.get(optimizer, False):
+        if not optimizers.get(optimizer, False): #TODO: change this to be list of optimizers avail in tsfl (done to be added)
             raise ValueError(
                 'Invalid optimizer option: {}. '
                 'Please choose from:'
                 '{}'.format(optimizer, optimizers.keys()))
+        #TODO: change this to be list of activations avail in tsfl (done to be added)
         if not activations.get(activation, False) or \
            not activations.get(pred_activation, False):
             raise ValueError(
@@ -89,22 +91,28 @@ class Network(object):
         self.y = y
         self.input_network = input_network
         self.input_params = None
+        #input network is dictionary
         if self.input_network is not None:
             if self.input_network.get('network', False) is not False and \
                self.input_network.get('layer', False) is not False and \
-               self.input_network.get('get_params', None) is not None:
+               self.input_network.get('get_params', None) is not None: #TODO: remove this, as tf has all params
+                    pass  #TODO
 
-                self.input_var = lasagne.layers.get_all_layers(
-                    self.input_network['network']
-                )[0].input_var
+                #TODO: replace this code, depending on how estimators work.
+                #TODO: this is extracting from the first layer
+                # self.input_var = lasagne.layers.get_all_layers(
+                #     self.input_network['network']
+                # )[0].input_var
+                #
+                # self.input_dimensions = lasagne.layers.get_output_shape(
+                #     self.input_network['network'].layers[
+                #         self.input_network['layer']
+                #     ]
+                # )
 
-                self.input_dimensions = lasagne.layers.get_output_shape(
-                    self.input_network['network'].layers[
-                        self.input_network['layer']
-                    ]
-                )
-                if self.input_network.get('get_params', False):
-                    self.input_params = self.input_network['network'].params
+                #TODO: delete
+                # if self.input_network.get('get_params', False):
+                #     self.input_params = self.input_network['network'].params
 
             else:
                 raise ValueError(
@@ -120,19 +128,24 @@ class Network(object):
             nonlinearity=activations[self.activation]
         )
         if self.y is not None:
-            self.trainer = self.create_trainer()
+            self.trainer = self.create_trainer() #TODO: here we probably don't want to pass a function.... but we do need to provide access... so something that calls the estimator with the appropriate mode.
             self.validator = self.create_validator()
+
+
+        #TODO: here we create our my_model function
+
 
         self.output = theano.function(
             [i for i in [self.input_var] if i],
-            lasagne.layers.get_output(self.network, deterministic=True))
-        self.record = None
+            lasagne.layers.get_output(self.network, deterministic=True)) #TODO: he we should store the estimator object
+
+        self.record = None #TODO: figure out what this is
 
         try:
             self.timestamp
         except AttributeError:
             self.timestamp = get_timestamp()
-        self.minibatch_iteration = 0
+        self.minibatch_iteration = 0 #TODO: may need to change depending on what functions are called
 
 
     def create_network(self, config, nonlinearity):
@@ -148,8 +161,12 @@ class Network(object):
         import jsonschema
         import schemas
         mode = config.get('mode')
+
+
+        #TODO: here write any "basic" or "default" code to pass to the relevant function.
+
         if mode == 'dense':
-            jsonschema.validate(config, schemas.dense_network)
+            jsonschema.validate(config, schemas.dense_network) #TODO: just double check we can do all the same things
 
             network = self.create_dense_network(
                 units=config.get('units'),
@@ -157,7 +174,7 @@ class Network(object):
                 nonlinearity=nonlinearity
             )
         elif mode == 'conv':
-            jsonschema.validate(config, schemas.conv_network)
+            jsonschema.validate(config, schemas.conv_network) #TODO: just double check we can do all the same things
 
             network = self.create_conv_network(
                 filters=config.get('filters'),
@@ -170,7 +187,7 @@ class Network(object):
         else:
             raise ValueError('Mode {} not supported.'.format(mode))
 
-        if self.num_classes is not None and self.num_classes != 0:
+        if self.num_classes is not None and self.num_classes != 0: #TODO: try and add this separately.
             network = self.create_classification_layer(
                 network,
                 num_classes=self.num_classes,
