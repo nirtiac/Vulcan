@@ -1,38 +1,13 @@
 """Contains the class for creating networks."""
 
 import time
-
 import os
-
 import sys
 import json
-import cPickle as pickle
 import numpy as np
-
-#TODO: import everything needed for tensorflow
-# import lasagne
-#
-# import theano
-# import theano.tensor as T
-
-from utils import get_class
-from utils import display_record
+import tensorflow as tf
 from utils import get_timestamp
-
-from selu import AlphaDropoutLayer
-
 from ops import activations, optimizers
-
-from sklearn.utils import shuffle
-import matplotlib.pyplot as plt
-import matplotlib
-
-if os.name is not "posix":
-    if "DISPLAY" not in os.environ:
-        matplotlib.use('Agg')
-else:
-    matplotlib.use('TkAgg')
-
 
 sys.setrecursionlimit(5000)
 
@@ -131,7 +106,7 @@ class Network(object):
             self.trainer = self.create_trainer() #TODO: here we probably don't want to pass a function.... but we do need to provide access... so something that calls the estimator with the appropriate mode.
             self.validator = self.create_validator()
 
-
+        self.output = self.create_model_function()
         #TODO: here we create our my_model function
 
 
@@ -147,6 +122,21 @@ class Network(object):
             self.timestamp = get_timestamp()
         self.minibatch_iteration = 0 #TODO: may need to change depending on what functions are called
 
+    def create_model_function(self, network, loss, metrics):
+
+        net = network
+
+
+        #here you can also create predicted classes
+
+        loss = loss
+
+        metrics = metrics
+
+        if mode == tf.estimator.ModeKeys.EVAL:
+            return tf.estimator.EstimatorSpec(
+                mode, loss=loss, eval_metric_ops=metrics
+            )
 
     def create_network(self, config, nonlinearity):
         """
@@ -300,7 +290,7 @@ class Network(object):
 
     def create_dense_network(self, units, dropouts, nonlinearity):
         """
-        Generate a fully connected layer.
+        Generate a dense network.
 
         Args:
             units: The list of number of nodes to have at each layer
