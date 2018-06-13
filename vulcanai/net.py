@@ -26,8 +26,8 @@ class Network(object):
         Args:
             name: string of network name
             dimensions: the size of the input data matrix
-            input_var: theano tensor representing input matrix
-            y: theano tensor representing truth matrix
+            input_var: tf tensor representing input matrix
+            y: tf tensor representing truth matrix
             config: Network configuration (as dict)
             input_network: None or a dictionary containing keys (network, layer).
                 network: a Network object
@@ -38,6 +38,7 @@ class Network(object):
             optimizer: which optimizer to use as the learning function
             learning_rate: the initial learning rate
         """
+        #TODO: figure out how to deal with input_network.layer
         self.name = name
         self.layers = []
         self.cost = None
@@ -47,12 +48,11 @@ class Network(object):
         self.learning_rate = learning_rate
         self.init_learning_rate = learning_rate
         self.stopping_rule = stopping_rule
-        if not optimizers.get(optimizer, False): #TODO: change this to be list of optimizers avail in tsfl (done to be added)
+        if not optimizers.get(optimizer, False):
             raise ValueError(
                 'Invalid optimizer option: {}. '
                 'Please choose from:'
                 '{}'.format(optimizer, optimizers.keys()))
-        #TODO: change this to be list of activations avail in tsfl (done to be added)
         if not activations.get(activation, False) or \
            not activations.get(pred_activation, False):
             raise ValueError(
@@ -122,21 +122,69 @@ class Network(object):
             self.timestamp = get_timestamp()
         self.minibatch_iteration = 0 #TODO: may need to change depending on what functions are called
 
-    def create_model_function(self, network, loss, metrics):
+    # def create_model_function(self, network, loss, metrics):
+    #
+    #     net = network
+    #
+    #
+    #     #here you can also create predicted classes
+    #
+    #     loss = loss
+    #
+    #     metrics = metrics
+    #
+    #     if mode == tf.estimator.ModeKeys.EVAL:
+    #         return tf.estimator.EstimatorSpec(
+    #             mode, loss=loss, eval_metric_ops=metrics
+    #         )
 
-        net = network
+    def my_model(features, labels, mode, params, units, dropouts, nonlinearity):
+        """DNN with three hidden layers, and dropout of 0.1 probability."""
 
+        if len(units) != len(dropouts):
+            raise ValueError(
+                "Cannot build network: units and dropouts don't correspond"
+            )
 
-        #here you can also create predicted classes
+        net = tf.feature_column.input_layer(features, params['feature_columns'])
 
-        loss = loss
+        for units in units:
+            net = tf.layers.dense(net, units=units, activation=nonlinearity)
 
-        metrics = metrics
+        # Compute logits (1 per class).
+        logits = tf.layers.dense(net, params['n_classes'], activation=None)
+
+        # Compute predictions.
+        predicted_classes = tf.argmax(logits, 1)
+        if mode == tf.estimator.ModeKeys.PREDICT:
+            predictions = {
+                'class_ids': predicted_classes[:, tf.newaxis],
+                'probabilities': tf.nn.softmax(logits),
+                'logits': logits,
+            }
+            return tf.estimator.EstimatorSpec(mode, predictions=predictions)
+
+        # Compute loss.
+        loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits)
+
+        # Compute evaluation metrics.
+        accuracy = tf.metrics.accuracy(labels=labels,
+                                       predictions=predicted_classes,
+                                       name='acc_op')
+        metrics = {'accuracy': accuracy}
+        tf.summary.scalar('accuracy', accuracy[1])
 
         if mode == tf.estimator.ModeKeys.EVAL:
             return tf.estimator.EstimatorSpec(
-                mode, loss=loss, eval_metric_ops=metrics
-            )
+                mode, loss=loss, eval_metric_ops=metrics)
+
+        # Create training op.
+        assert mode == tf.estimator.ModeKeys.TRAIN
+
+        optimizer = tf.train.AdagradOptimizer(learning_rate=0.1)
+        train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
+
 
     def create_network(self, config, nonlinearity):
         """
@@ -152,7 +200,6 @@ class Network(object):
         import schemas
         mode = config.get('mode')
 
-
         #TODO: here write any "basic" or "default" code to pass to the relevant function.
 
         if mode == 'dense':
@@ -163,6 +210,7 @@ class Network(object):
                 dropouts=config.get('dropouts'),
                 nonlinearity=nonlinearity
             )
+
         elif mode == 'conv':
             jsonschema.validate(config, schemas.conv_network) #TODO: just double check we can do all the same things
 
@@ -177,7 +225,8 @@ class Network(object):
         else:
             raise ValueError('Mode {} not supported.'.format(mode))
 
-        if self.num_classes is not None and self.num_classes != 0: #TODO: try and add this separately.
+        #TODO: really doesn't need to be a separate function...
+        if self.num_classes is not None and self.num_classes != 0:
             network = self.create_classification_layer(
                 network,
                 num_classes=self.num_classes,
@@ -187,106 +236,106 @@ class Network(object):
         return network
 
 
-    def create_conv_network(self, filters, filter_size, stride,
-                            pool_mode, pool_stride, nonlinearity):
-        """
-        Create a convolutional network (1D, 2D, or 3D).
-
-        Args:
-            filters: list of int. number of kernels per layer
-            filter_size: list of int list. size of kernels per layer
-            stride: list of int list. stride of kernels
-            pool_mode: string. pooling operation
-            pool_stride: list of int list. down_scaling factor
-            nonlinearity: string. nonlinearity to use for each layer
-
-        Returns a conv network
-        """
-        conv_dim = len(filter_size[0])
-        lasagne_pools = ['max', 'average_inc_pad', 'average_exc_pad']
-        if not all(len(f) == conv_dim for f in filter_size):
-            raise ValueError('Each tuple in filter_size {} must have a '
-                             'length of {}'.format(filter_size, conv_dim))
-        if not all(len(s) == conv_dim for s in stride):
-            raise ValueError('Each tuple in stride {} must have a '
-                             'length of {}'.format(stride, conv_dim))
-        if not all(len(p) == conv_dim for p in pool_stride):
-            raise ValueError('Each tuple in pool_stride {} must have a '
-                             'length of {}'.format(pool_stride, conv_dim))
-        if pool_mode not in lasagne_pools:
-            raise ValueError('{} pooling does not exist. '
-                             'Please use one of: {}'.format(pool_mode, lasagne_pools))
-
-        print("Creating {} Network...".format(self.name))
-        if self.input_network is None:
-            print('\tInput Layer:')
-            network = lasagne.layers.InputLayer(shape=self.input_dimensions,
-                                                input_var=self.input_var,
-                                                name="{}_input".format(
-                                                    self.name))
-            print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
-            self.layers.append(network)
-        else:
-            network = self.input_network['network']. \
-                layers[self.input_network['layer']]
-
-            print('Appending layer {} from {} to {}'.format(
-                self.input_network['layer'],
-                self.input_network['network'].name,
-                self.name))
-
-        if conv_dim == 1:
-            conv_layer = lasagne.layers.Conv1DLayer
-            pool = lasagne.layers.Pool1DLayer
-        elif conv_dim == 2:
-            conv_layer = lasagne.layers.Conv2DLayer
-            pool = lasagne.layers.Pool2DLayer
-        elif conv_dim == 3:
-            conv_layer = lasagne.layers.Conv3DLayer
-            pool = lasagne.layers.Pool3DLayer
-        else:
-            pool = None   # Linter is stupid
-            conv_layer = None
-            ValueError("Convolution is only supported for one of the first three dimensions")
-
-        print('\tHidden Layer:')
-        for i, (f, f_size, s, p_s) in enumerate(zip(filters,
-                                                    filter_size,
-                                                    stride,
-                                                    pool_stride)):
-            network = conv_layer(
-                incoming=network,
-                num_filters=f,
-                filter_size=f_size,
-                stride=s,
-                pad='same',
-                nonlinearity=nonlinearity,
-                name="{}_conv{}D_{}".format(
-                    self.name, conv_dim, i)
-            )
-            network.add_param(
-                network.W,
-                network.W.get_value().shape,
-                **{self.name: True}
-            )
-            network.add_param(
-                network.b,
-                network.b.get_value().shape,
-                **{self.name: True}
-            )
-            self.layers.append(network)
-            print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
-            network = pool(
-                incoming=network,
-                pool_size=p_s,
-                mode=pool_mode,
-                name="{}_{}pool".format(
-                    self.name, pool_mode)
-            )
-            self.layers.append(network)
-            print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
-        return network
-
+    # def create_conv_network(self, filters, filter_size, stride,
+    #                         pool_mode, pool_stride, nonlinearity):
+    #     """
+    #     Create a convolutional network (1D, 2D, or 3D).
+    #
+    #     Args:
+    #         filters: list of int. number of kernels per layer
+    #         filter_size: list of int list. size of kernels per layer
+    #         stride: list of int list. stride of kernels
+    #         pool_mode: string. pooling operation
+    #         pool_stride: list of int list. down_scaling factor
+    #         nonlinearity: string. nonlinearity to use for each layer
+    #
+    #     Returns a conv network
+    #     """
+    #     conv_dim = len(filter_size[0])
+    #     lasagne_pools = ['max', 'average_inc_pad', 'average_exc_pad']
+    #     if not all(len(f) == conv_dim for f in filter_size):
+    #         raise ValueError('Each tuple in filter_size {} must have a '
+    #                          'length of {}'.format(filter_size, conv_dim))
+    #     if not all(len(s) == conv_dim for s in stride):
+    #         raise ValueError('Each tuple in stride {} must have a '
+    #                          'length of {}'.format(stride, conv_dim))
+    #     if not all(len(p) == conv_dim for p in pool_stride):
+    #         raise ValueError('Each tuple in pool_stride {} must have a '
+    #                          'length of {}'.format(pool_stride, conv_dim))
+    #     if pool_mode not in lasagne_pools:
+    #         raise ValueError('{} pooling does not exist. '
+    #                          'Please use one of: {}'.format(pool_mode, lasagne_pools))
+    #
+    #     print("Creating {} Network...".format(self.name))
+    #     if self.input_network is None:
+    #         print('\tInput Layer:')
+    #         network = lasagne.layers.InputLayer(shape=self.input_dimensions,
+    #                                             input_var=self.input_var,
+    #                                             name="{}_input".format(
+    #                                                 self.name))
+    #         print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+    #         self.layers.append(network)
+    #     else:
+    #         network = self.input_network['network']. \
+    #             layers[self.input_network['layer']]
+    #
+    #         print('Appending layer {} from {} to {}'.format(
+    #             self.input_network['layer'],
+    #             self.input_network['network'].name,
+    #             self.name))
+    #
+    #     if conv_dim == 1:
+    #         conv_layer = lasagne.layers.Conv1DLayer
+    #         pool = lasagne.layers.Pool1DLayer
+    #     elif conv_dim == 2:
+    #         conv_layer = lasagne.layers.Conv2DLayer
+    #         pool = lasagne.layers.Pool2DLayer
+    #     elif conv_dim == 3:
+    #         conv_layer = lasagne.layers.Conv3DLayer
+    #         pool = lasagne.layers.Pool3DLayer
+    #     else:
+    #         pool = None   # Linter is stupid
+    #         conv_layer = None
+    #         ValueError("Convolution is only supported for one of the first three dimensions")
+    #
+    #     print('\tHidden Layer:')
+    #     for i, (f, f_size, s, p_s) in enumerate(zip(filters,
+    #                                                 filter_size,
+    #                                                 stride,
+    #                                                 pool_stride)):
+    #         network = conv_layer(
+    #             incoming=network,
+    #             num_filters=f,
+    #             filter_size=f_size,
+    #             stride=s,
+    #             pad='same',
+    #             nonlinearity=nonlinearity,
+    #             name="{}_conv{}D_{}".format(
+    #                 self.name, conv_dim, i)
+    #         )
+    #         network.add_param(
+    #             network.W,
+    #             network.W.get_value().shape,
+    #             **{self.name: True}
+    #         )
+    #         network.add_param(
+    #             network.b,
+    #             network.b.get_value().shape,
+    #             **{self.name: True}
+    #         )
+    #         self.layers.append(network)
+    #         print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+    #         network = pool(
+    #             incoming=network,
+    #             pool_size=p_s,
+    #             mode=pool_mode,
+    #             name="{}_{}pool".format(
+    #                 self.name, pool_mode)
+    #         )
+    #         self.layers.append(network)
+    #         print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+    #     return network
+    #
 
     def create_dense_network(self, units, dropouts, nonlinearity):
         """
@@ -299,81 +348,119 @@ class Network(object):
 
         Returns: the output of the network (linked up to all the layers)
         """
+
         if len(units) != len(dropouts):
             raise ValueError(
                 "Cannot build network: units and dropouts don't correspond"
             )
 
+        #TODO: this should be logger
         print("Creating {} Network...".format(self.name))
-        if self.input_network is None:
-            print('\tInput Layer:')
-            network = lasagne.layers.InputLayer(shape=self.input_dimensions,
-                                                input_var=self.input_var,
-                                                name="{}_input".format(
-                                                    self.name))
-            print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
-            self.layers.append(network)
-        else:
-            network = self.input_network['network']. \
-                layers[self.input_network['layer']]
 
-            print('Appending layer {} from {} to {}'.format(
-                self.input_network['layer'],
-                self.input_network['network'].name,
-                self.name))
+        #TODO: here integrate the whole input network thing
 
-        if nonlinearity.__name__ == 'selu':
-            network = lasagne.layers.BatchNormLayer(
-                incoming=network,
-                name="{}_batchnorm".format(self.name)
-            )
+        #TODO: where features is a mapping from key to tensor and features columns is an iterable
+        network = tf.feature_column.input_layer(self.features, self.params['feature_columns'])
 
-        print('\tHidden Layer:')
+        #TODO: you probably have to do something different for selu?? check.
+        #TODO: name layers?
         for i, (num_units, prob_dropout) in enumerate(zip(units, dropouts)):
-            if nonlinearity.__name__ == 'selu':
-                w = lasagne.init.Normal(std=np.sqrt(1.0 / num_units))
-                b = lasagne.init.Normal(std=0.0)
-            else:
-                w = lasagne.init.GlorotUniform()
-                b = lasagne.init.Constant(0.)
+            network = tf.layers.dense(network, units=num_units, activation=nonlinearity)
+            #TODO: need to create this training switch and pass it appropriately....
+            network = tf.layers.dropout(network, rate=prob_dropout, training=self.tf_is_training)
 
-            network = lasagne.layers.DenseLayer(
-                incoming=network,
-                num_units=num_units,
-                nonlinearity=nonlinearity,
-                name="{}_dense_{}".format(self.name, i),
-                W=w,
-                b=b
-            )
-            network.add_param(
-                network.W,
-                network.W.get_value().shape,
-                **{self.name: True}
-            )
-            network.add_param(
-                network.b,
-                network.b.get_value().shape,
-                **{self.name: True}
-            )
-            self.layers.append(network)
-
-            if nonlinearity.__name__ == 'selu':
-                network = AlphaDropoutLayer(
-                    incoming=network,
-                    name="{}_alphadropout_{}".format(self.name, i))
-            else:
-                network = lasagne.layers.DropoutLayer(
-                    incoming=network,
-                    p=prob_dropout,
-                    name="{}_dropout_{}".format(self.name, i)
-                )
-
-            self.layers.append(network)
-            print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
         return network
 
-    def create_classification_layer(self, network, num_classes,
-                                    nonlinearity):
+    #
+    # #
+    # def create_dense_network(self, units, dropouts, nonlinearity):
+    #     """
+    #     Generate a dense network.
+    #
+    #     Args:
+    #         units: The list of number of nodes to have at each layer
+    #         dropouts: The list of dropout probabilities for each layer
+    #         nonlinearity: Nonlinearity from Lasagne.nonlinearities
+    #
+    #     Returns: the output of the network (linked up to all the layers)
+    #     """
+    #     if len(units) != len(dropouts):
+    #         raise ValueError(
+    #             "Cannot build network: units and dropouts don't correspond"
+    #         )
+    #
+    #     print("Creating {} Network...".format(self.name))
+    #     if self.input_network is None:
+    #         print('\tInput Layer:')
+    #         network = lasagne.layers.InputLayer(shape=self.input_dimensions,
+    #                                             input_var=self.input_var,
+    #                                             name="{}_input".format(
+    #                                                 self.name))
+    #         print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+    #         self.layers.append(network)
+    #     else:
+    #         network = self.input_network['network']. \
+    #             layers[self.input_network['layer']]
+    #
+    #         print('Appending layer {} from {} to {}'.format(
+    #             self.input_network['layer'],
+    #             self.input_network['network'].name,
+    #             self.name))
+    #
+    #     if nonlinearity.__name__ == 'selu':
+    #         network = lasagne.layers.BatchNormLayer(
+    #             incoming=network,
+    #             name="{}_batchnorm".format(self.name)
+    #         )
+    #
+    #     print('\tHidden Layer:')
+    #     for i, (num_units, prob_dropout) in enumerate(zip(units, dropouts)):
+    #         if nonlinearity.__name__ == 'selu':
+    #             w = lasagne.init.Normal(std=np.sqrt(1.0 / num_units))
+    #             b = lasagne.init.Normal(std=0.0)
+    #         else:
+    #             w = lasagne.init.GlorotUniform()
+    #             b = lasagne.init.Constant(0.)
+    #
+    #         network = lasagne.layers.DenseLayer(
+    #             incoming=network,
+    #             num_units=num_units,
+    #             nonlinearity=nonlinearity,
+    #             name="{}_dense_{}".format(self.name, i),
+    #             W=w,
+    #             b=b
+    #         )
+    #         network.add_param(
+    #             network.W,
+    #             network.W.get_value().shape,
+    #             **{self.name: True}
+    #         )
+    #         network.add_param(
+    #             network.b,
+    #             network.b.get_value().shape,
+    #             **{self.name: True}
+    #         )
+    #         self.layers.append(network)
+    #
+    #         if nonlinearity.__name__ == 'selu':
+    #             network = AlphaDropoutLayer(
+    #                 incoming=network,
+    #                 name="{}_alphadropout_{}".format(self.name, i))
+    #         else:
+    #             network = lasagne.layers.DropoutLayer(
+    #                 incoming=network,
+    #                 p=prob_dropout,
+    #                 name="{}_dropout_{}".format(self.name, i)
+    #             )
+    #
+    #         self.layers.append(network)
+    #         print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+    #     return network
+
+
+
+
+    def create_classification_layer(self, network, num_classes, nonlinearity):
         """
         Create a classification layer. Normally used as the last layer.
 
@@ -385,25 +472,47 @@ class Network(object):
         Returns: the classification layer appended to all previous layers
         """
         print('\tOutput Layer:')
-        network = lasagne.layers.DenseLayer(
-            incoming=network,
-            num_units=num_classes,
-            nonlinearity=nonlinearity,
-            name="{}_softmax".format(self.name)
-        )
-        network.add_param(
-            network.W,
-            network.W.get_value().shape,
-            **{self.name: True}
-        )
-        network.add_param(
-            network.b,
-            network.b.get_value().shape,
-            **{self.name: True}
-        )
-        print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
-        self.layers.append(network)
+
+        network = tf.layers.dense(network, num_classes, activation=nonlinearity)
+
+        #TODO: fix this to be whatever it is in tensorflow
+        #print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+
         return network
+
+
+    # def create_classification_layer(self, network, num_classes,
+    #                                 nonlinearity):
+    #     """
+    #     Create a classification layer. Normally used as the last layer.
+    #
+    #     Args:
+    #         network: network you want to append a classification to
+    #         num_classes: how many classes you want to predict
+    #         nonlinearity: nonlinearity to use as a string (see DenseLayer)
+    #
+    #     Returns: the classification layer appended to all previous layers
+    #     """
+    #     print('\tOutput Layer:')
+    #     network = lasagne.layers.DenseLayer(
+    #         incoming=network,
+    #         num_units=num_classes,
+    #         nonlinearity=nonlinearity,
+    #         name="{}_softmax".format(self.name)
+    #     )
+    #     network.add_param(
+    #         network.W,
+    #         network.W.get_value().shape,
+    #         **{self.name: True}
+    #     )
+    #     network.add_param(
+    #         network.b,
+    #         network.b.get_value().shape,
+    #         **{self.name: True}
+    #     )
+    #     print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+    #     self.layers.append(network)
+    #     return network
 
     def cross_entropy_loss(self, prediction, y):
         """Generate a cross entropy loss function."""
@@ -623,12 +732,12 @@ class Network(object):
                                                                        val_y)
 
                 if self.stopping_rule == 'best_validation_error' and validation_error < best_error:
-                    best_state = self.__getstate__()
+                    #best_state = self.__getstate__()
                     best_epoch = epoch
                     best_error = validation_error
 
                 elif self.stopping_rule == 'best_validation_accuracy' and validation_accuracy > best_accuracy:
-                    best_state = self.__getstate__()
+                    #best_state = self.__getstate__()
                     best_epoch = epoch
                     best_accuracy = validation_accuracy
 

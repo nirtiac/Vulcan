@@ -1,13 +1,11 @@
 """Contains activation functions and gradient descent optimizers."""
-from lasagne.nonlinearities import sigmoid, softmax, rectify
-from selu import selu
-from lasagne.updates import sgd, adam
+import tensorflow as tf #TODO: import less
 
 activations = {
-    "sigmoid": sigmoid,
-    "softmax": softmax,
-    "rectify": rectify,
-    "selu": selu
+    "sigmoid": tf.nn.sigmoid,
+    "softmax": tf.nn.softmax,
+    "rectify": tf.nn.rectify,
+    "selu": tf.nn.selu
 }
 
 optimizers = {
