@@ -10,7 +10,7 @@ from utils import get_timestamp
 from ops import activations, optimizers
 from sklearn.utils import shuffle
 
-
+from utils import get_one_hot
 sys.setrecursionlimit(5000)
 
 class Network(object):
@@ -84,8 +84,7 @@ class Network(object):
         self.num_classes = num_classes
         #TODO: really this should be named
         #TODO: change the dimension hackkkkkk
-        self.feature_columns = [tf.feature_column.numeric_column(key=x) for x in range(self.input_dimensions[1])]
-
+        self.feature_columns = [tf.feature_column.numeric_column(key=str(x)) for x in range(self.input_dimensions[1])]
         #TODO: this whole structure and param passing are dumb
         model_function = self.make_model_function()
 
@@ -113,8 +112,8 @@ class Network(object):
 
             network = self.create_network(features, config=self.config, nonlinearity=activations[self.activation]) #TODO: better off as a function call? arghhh
 
-            print network
-            predicted_classes = tf.argmax(network, 1)
+            predicted_classes = tf.one_hot(tf.argmax(network, 1), self.num_classes) #TODO: check this is translating correctly
+            print predicted_classes
 
             #TODO: reimplement this
             if mode == tf.estimator.ModeKeys.PREDICT:
@@ -133,7 +132,6 @@ class Network(object):
 
             # Compute evaluation metrics.
             # TODO: can configure this.
-            print predicted_classes
             accuracy = tf.metrics.accuracy(labels=labels,
                                            predictions=predicted_classes,
                                            name='acc_op')
@@ -149,11 +147,12 @@ class Network(object):
             #don't really like it, but can change later.
             assert mode == tf.estimator.ModeKeys.TRAIN
 
+            print "calling the train"
             #TODO: need to pass the learning rate var appropriately!
             if self.optimizer == 'adam':
                 optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
             elif self.optimizer == 'sgd':
-                optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
+                optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.1)
             else:
                 ValueError("No optizer found") #TODO my goodness make sure you're still passing things
 
@@ -212,6 +211,7 @@ class Network(object):
         Generate a dense network.
 
         Args:
+            features: diction
             units: The list of number of nodes to have at each layer
             dropouts: The list of dropout probabilities for each layer
             nonlinearity: Nonlinearity from Lasagne.nonlinearities
@@ -233,7 +233,7 @@ class Network(object):
         #TODO: actually get this from init params
 
 
-        network = tf.layers.dense(features, self.input_dimensions) #TODO: this is almost definitely wrong
+        network = tf.feature_column.input_layer(features, self.feature_columns)
 
         #TODO: you probably have to do something different for selu?? check.
         #TODO: name layers?
@@ -267,6 +267,7 @@ class Network(object):
 
     def eval_input_fn(self, features, labels, batch_ratio):
         """An input function for evaluation or prediction"""
+        features=dict(features)
         if labels is None:
             # No labels, use only features.
             inputs = features
@@ -276,8 +277,8 @@ class Network(object):
         # Convert the inputs to a Dataset.
         dataset = tf.data.Dataset.from_tensor_slices(inputs)
 
-        #TODO: fix this hack self.input_dimensions[1]
-        batch_size = int(self.input_dimensions[1] * batch_ratio) #TODO: better check this is right
+        #TODO: check correct
+        batch_size = int(len(labels) * batch_ratio)
 
         # Batch the examples
         assert batch_size is not None, "batch_size must not be None"
@@ -291,16 +292,17 @@ class Network(object):
     def train_input_fn(self, features, labels, batch_ratio):
         """An input function for training"""
         # Convert the inputs to a Dataset.
-        dataset = tf.data.Dataset.from_tensor_slices((features, labels)) #TODO: this will probably break
+        dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels)) #TODO: this will probably break
 
-        #TODO: fix this hack self.input_dimensions[1]
-        batch_size = int(self.input_dimensions[1] * batch_ratio) #TODO: better check this is right
+        batch_size = int(len(labels) * batch_ratio)
+
+        if batch_size < 1:
+            batch_size = len(labels)
 
         # Shuffle, repeat, and batch the examples.
         dataset = dataset.shuffle(1000).repeat().batch(batch_size)
 
-        # Return the read end of the pipeline.
-        return dataset.make_one_shot_iterator().get_next()
+        return dataset
 
     def train(self, epochs, train_x, train_y, val_x, val_y,
               batch_ratio=0.1, plot=True, change_rate=None):
@@ -322,10 +324,14 @@ class Network(object):
         print('\nTraining {} in progress...\n'.format(self.name))
         self.tf_is_training = True #for dropout
 
+
+        train_x_dict = {str(i):v for i, v in enumerate(np.swapaxes(train_x, 0, 1))} #TODO: aawwwkward
+        val_x_dict = {str(i):v for i, v in enumerate(np.swapaxes(val_x, 0, 1))}
+
+
         if batch_ratio > 1:
             batch_ratio = 1
         batch_ratio = float(batch_ratio)
-
 
         self.record = dict(
             epoch=[],
@@ -361,7 +367,7 @@ class Network(object):
                 #TODO: I think I still need to leave this in?
                 train_x, train_y = shuffle(train_x, train_y, random_state=0)
 
-                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x, train_y, batch_ratio))
+                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x_dict, train_y, batch_ratio))
 
 
                 #TODO: somehow get percentage batch finished
@@ -371,8 +377,8 @@ class Network(object):
                 #https://github.com/tensorflow/tensorflow/blob/r1.8/tensorflow/python/estimator/estimator.py
                 #TODO: make this into a function!
 
-                train_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(train_x, train_y, batch_ratio))
-                val_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(val_x, val_y, batch_ratio))
+                train_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(train_x_dict, train_y, batch_ratio))
+                val_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(val_x_dict, val_y, batch_ratio))
 
                 train_error = train_eval_result["loss"]
                 train_accuracy = train_eval_result["accuracy"]

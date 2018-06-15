@@ -20,8 +20,7 @@ from vulcanai.model_tests import run_test
     #    my_feature_columns.append(tf.feature_column.numeric_column(key=key))
 
 train_labels = get_one_hot(train_labels)
-train_images_features = {i:v for i, v in enumerate(np.swapaxes(train_images, 0, 1))}
-test_images_features = {i:v for i, v in enumerate(np.swapaxes(test_images, 0, 1))}
+
 
 #TODO: think you have to change dimension of labels as well
 
@@ -52,10 +51,10 @@ dense_net = Network(
 # # dense_net = Network.load_model('models/20170704194033_3_dense_test.network')
 dense_net.train(
     epochs=10,
-    train_x=train_images[:50000],
-    train_y=train_labels[:50000],
-    val_x=train_images[50000:60000],
-    val_y=train_labels[50000:60000],
+    train_x=train_images[:1],
+    train_y=train_labels[:1],
+    val_x=train_images[1:2],
+    val_y=train_labels[1:2],
     batch_ratio=0.05,
     plot=True
 
