@@ -17,6 +17,10 @@ train_labels = get_one_hot(train_labels)
 input_var = T.fmatrix('input')
 y = T.fmatrix('truth')
 
+# TODO: here you turn this into the data... ideally you would write function in net.py that does this easily...
+# but whatever
+
+
 network_dense_config = {
     'mode': 'dense',
     'units': [512],
