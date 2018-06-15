@@ -8,6 +8,8 @@ import numpy as np
 import tensorflow as tf
 from utils import get_timestamp
 from ops import activations, optimizers
+from sklearn.utils import shuffle
+
 
 sys.setrecursionlimit(5000)
 
@@ -37,12 +39,12 @@ class Network(object):
             optimizer: which optimizer to use as the learning function
             learning_rate: the initial learning rate
         """
-        #TODO: figure out how to deal with input_network.layer
         self.name = name
         self.layers = []
         #self.cost = None
         #self.val_cost = None #TODO: figure out if you really need these.
         self.input_dimensions = dimensions #TODO: I think for non-numeric this needs to contain more info
+        #TODO: confirm dimensions is what you think it is for input networks
         self.config = config
         self.learning_rate = learning_rate
         self.init_learning_rate = learning_rate
@@ -80,28 +82,13 @@ class Network(object):
         #             )
         #         )
         self.num_classes = num_classes
+        #TODO: really this should be named
+        self.feature_columns = [tf.feature_column.numeric_column(key=x) for x in range(self.dimensions)]
 
-        self.network = self.create_network(
-            config=self.config,
-            nonlinearity=activations[self.activation]
-        )
-        if self.y is not None:
-            self.trainer = self.create_trainer()
-            self.validator = self.create_validator()
+        #TODO: this whole structure and param passing are dumb
+        model_function = self.make_model_function()
 
-        #TODO: here we create our my_model function
-        model_function = self.make_model_function() #TODO: fix param passing!
-
-        #TODO: actually train this
-        self.classifier = tf.estimator.Estimator(
-            model_fn=model_function,
-            params={
-            'feature_columns': my_feature_columns,
-            # Two hidden layers of 10 nodes each.
-            'hidden_units': [10, 10],
-            # The model must choose between 3 classes.
-            'n_classes': 3,
-        })
+        self.classifier = tf.estimator.Estimator(model_fn=model_function)
 
         #so this is like predictions?? confused.
         # self.output = theano.function(
@@ -119,11 +106,11 @@ class Network(object):
 
     def make_model_function(self):
 
-        #alternatively make this a private top-level function...
+        #alternatively make this a "private" top-level function...
         #could also call helper functions inside here...
         def my_model(features, labels, mode):
 
-            network = self.network #TODO: better off as a function call? arghhh
+            network = self.create_network(features, config=self.config, nonlinearity=activations[self.activation]) #TODO: better off as a function call? arghhh
 
             predicted_classes = tf.argmax(network, 1)
 
@@ -165,14 +152,13 @@ class Network(object):
             elif self.optimizer == 'sgd':
                 optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
             else:
-                updates = None
                 ValueError("No optizer found") #TODO my goodness make sure you're still passing things
 
-            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step()) #TODO: work with global step for stopped.
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
 
 
-    def create_network(self, config, nonlinearity):
+    def create_network(self, features, config, nonlinearity):
         """
         Abstract function to create any network given a config dict.
 
@@ -189,21 +175,22 @@ class Network(object):
         if mode == 'dense':
             jsonschema.validate(config, schemas.dense_network)
             network = self.create_dense_network(
+                features,
                 units=config.get('units'),
                 dropouts=config.get('dropouts'),
                 nonlinearity=nonlinearity
             )
 
-        elif mode == 'conv':
-            jsonschema.validate(config, schemas.conv_network)
-            network = self.create_conv_network(
-                filters=config.get('filters'),
-                filter_size=config.get('filter_size'),
-                stride=config.get('stride'),
-                pool_mode=config['pool'].get('mode'),
-                pool_stride=config['pool'].get('stride'),
-                nonlinearity=nonlinearity
-            )
+        # elif mode == 'conv':
+        #     jsonschema.validate(config, schemas.conv_network)
+        #     network = self.create_conv_network(
+        #         filters=config.get('filters'),
+        #         filter_size=config.get('filter_size'),
+        #         stride=config.get('stride'),
+        #         pool_mode=config['pool'].get('mode'),
+        #         pool_stride=config['pool'].get('stride'),
+        #         nonlinearity=nonlinearity
+        #     )
         else:
             raise ValueError('Mode {} not supported.'.format(mode))
 
@@ -217,7 +204,7 @@ class Network(object):
         return network
 
 
-    def create_dense_network(self, units, dropouts, nonlinearity):
+    def create_dense_network(self, features, units, dropouts, nonlinearity):
         """
         Generate a dense network.
 
@@ -241,7 +228,7 @@ class Network(object):
 
         #TODO: where features is a mapping from key to tensor and features columns is an iterable
         #TODO: actually get this from init params
-        network = tf.feature_column.input_layer(self.features, self.params['feature_columns'])
+        network = tf.feature_column.input_layer(features, self.feature_columns)
 
         #TODO: you probably have to do something different for selu?? check.
         #TODO: name layers?
@@ -273,97 +260,8 @@ class Network(object):
         return network
 
 
-    def cross_entropy_loss(self, prediction, y):
-        """Generate a cross entropy loss function."""
-        print("Using categorical cross entropy loss")
-        return lasagne.objectives.categorical_crossentropy(prediction,
-                                                           y).mean()
-
-    def mse_loss(self, prediction, y):
-        """Generate mean squared error loss function."""
-        print("Using Mean Squared error loss")
-        return lasagne.objectives.squared_error(prediction, y).mean()
-
-
-
-    def create_validator(self):
-        """
-        Generate theano function to check error and accuracy of the network.
-
-        Returns: theano function that takes input (train_x,train_y)
-                 and returns error and accuracy
-        """
-        print("Creating {} Validator...".format(self.name))
-        # create prediction
-        val_prediction = lasagne.layers.get_output(
-            self.network,
-            deterministic=True
-        )
-        # check how much error in prediction
-        if self.val_cost is None:
-            if self.num_classes is None or self.num_classes == 0:
-                self.val_cost = self.mse_loss(val_prediction, self.y)
-                val_acc = T.constant(0)
-            else:
-                self.val_cost = self.cross_entropy_loss(val_prediction, self.y)
-                # check the accuracy of the prediction
-                if self.num_classes > 1:
-                    val_acc = T.mean(T.eq(T.argmax(val_prediction, axis=1),
-                                          T.argmax(self.y, axis=1)),
-                                     dtype=theano.config.floatX)
-                elif self.num_classes == 1:
-                    val_acc = T.mean(T.eq(T.round(val_prediction,
-                                                  mode='half_away_from_zero'),
-                                          self.y),
-                                     dtype=theano.config.floatX)
-
-        return theano.function([self.input_var, self.y],
-                               [self.val_cost, val_acc])
-
-
-    def forward_pass(self, input_data, convert_to_class=False):
-        """
-        Allow the implementer to quickly get outputs from the network.
-
-        Args:
-            input_data: Numpy matrix to make the predictions on
-            convert_to_class: If true, output the class
-                             with highest probability
-
-        Returns: Numpy matrix with the output probabilities
-                 with each class unless otherwise specified.
-        """
-        if convert_to_class:
-            return get_class(self.output(input_data))
-        else:
-            return self.output(input_data)
-
-
-    #TODO: actually put this in __init__ of the model
-    #taken from https://github.com/tensorflow/models/blob/master/samples/core/get_started/iris_data.py
-    def create_trainer(features, labels, batch_size):
-        """An input function for training"""
-        # Convert the inputs to a Dataset.
-        dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels))
-
-        # Shuffle, repeat, and batch the examples.
-        #TODO: This is actually a batch ratio!
-        dataset = dataset.shuffle(1000).repeat().batch(batch_size)
-
-        # Return the dataset.
-        return dataset
-
-    #taken from https://github.com/tensorflow/models/blob/master/samples/core/get_started/iris_data.py
-    def create_validator(features, labels, batch_size):
+    def eval_input_fn(self, features, labels, batch_ratio):
         """An input function for evaluation or prediction"""
-
-
-
-
-                eval_result = self.classifier.evaluate(
-        input_fn=lambda:self.eval_input_fn(test_x, test_y, args.batch_size))
-
-        features=dict(features)
         if labels is None:
             # No labels, use only features.
             inputs = features
@@ -373,6 +271,8 @@ class Network(object):
         # Convert the inputs to a Dataset.
         dataset = tf.data.Dataset.from_tensor_slices(inputs)
 
+        batch_size = self.input_dimensions * batch_ratio #TODO: better check this is right
+
         # Batch the examples
         assert batch_size is not None, "batch_size must not be None"
         dataset = dataset.batch(batch_size)
@@ -380,6 +280,20 @@ class Network(object):
         # Return the dataset.
         return dataset
 
+
+    #TODO: think about declaring and storing this in advance
+    def train_input_fn(self, features, labels, batch_ratio):
+        """An input function for training"""
+        # Convert the inputs to a Dataset.
+        dataset = tf.data.Dataset.from_tensor_slices((features, labels)) #TODO: this will probably break
+
+        batch_size = self.input_dimensions * batch_ratio #TODO: better check this is right
+
+        # Shuffle, repeat, and batch the examples.
+        dataset = dataset.shuffle(1000).repeat().batch(batch_size)
+
+        # Return the read end of the pipeline.
+        return dataset.make_one_shot_iterator().get_next()
 
     def train(self, epochs, train_x, train_y, val_x, val_y,
               batch_ratio=0.1, plot=True, change_rate=None):
@@ -427,7 +341,7 @@ class Network(object):
         #TODO: catch all the errors!!!
         #TODO: need to be able to update the learning rate. I think you need to make it a tensor object in your model fun optimizer
         #https://stackoverflow.com/questions/33919948/how-to-set-adaptive-learning-rate-for-gradientdescentoptimizer
-
+        #https://github.com/tensorflow/tensorflow/issues/2198
 
         try:
             for epoch in range(epochs):
@@ -437,13 +351,26 @@ class Network(object):
                         epochs - 1
                 ))
 
+                #TODO: I think I still need to leave this in?
+                train_x, train_y = shuffle(train_x, train_y, random_state=0)
+
+                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x, train_y, batch_ratio))
+
+
+                #TODO: somehow get percentage batch finished
+
+
                 #TODO: do we need to provide a value to the steps parameter?
                 #https://github.com/tensorflow/tensorflow/blob/r1.8/tensorflow/python/estimator/estimator.py
                 #TODO: make this into a function!
-                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x, train_y, batch_ratio))
 
-                train_error, train_accuracy = self.validator(train_x, train_y)
-                validation_error, validation_accuracy = self.validator(val_x,val_y)
+                train_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(train_x, train_y, batch_ratio))
+                val_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(val_x, val_y, batch_ratio))
+
+                train_error = train_eval_result["loss"]
+                train_accuracy = train_eval_result["accuracy"]
+                validation_error = val_eval_result["loss"]
+                validation_accuracy = val_eval_result['accuracy']
 
                 if self.stopping_rule == 'best_validation_error' and validation_error < best_error:
                     best_state = self.__getstate__() #TODO: this is probably gonna break....
@@ -496,156 +423,6 @@ class Network(object):
                 self.__setstate__(best_state)
 
             self.tf_is_training = False #TODO: actually make sure this makes sense.
-
-    def __getstate__(self):
-        """Pickle save config."""
-        pickle_dict = dict()
-        for k, v in self.__dict__.items():
-            if not issubclass(v.__class__,
-                              theano.compile.function_module.Function) \
-                and not issubclass(v.__class__,
-                                   theano.tensor.TensorVariable):
-                pickle_dict[k] = v
-        net_parameters = np.array(
-            lasagne.layers.get_all_param_values(self.layers,
-                                                **{self.name: True})
-        )
-        if self.input_network is None:
-            return pickle_dict, net_parameters, None, None, None
-        else:
-            pickle_dict['input_network'] = None
-            return (pickle_dict,
-                    net_parameters,
-                    self.input_network['network'].save_name,
-                    self.input_network['layer'],
-                    self.input_network['get_params'])
-
-    def __setstate__(self, params):
-        """Pickle load config."""
-        self.__dict__.update(params[0])
-        if params[2] is not None and params[3] is not None:
-            input_network = Network.load_model(params[2])
-            self.input_var = input_network.input_var
-            self.input_network = {'network': input_network,
-                                  'layer': params[3],
-                                  'get_params': params[4]}
-        else:
-            tensor_size = len(self.input_dimensions)
-
-            if tensor_size == 2:
-                self.input_var = T.matrix('input')
-            elif tensor_size == 3:
-                self.input_var = T.tensor3('input')
-            elif tensor_size == 4:
-                self.input_var = T.tensor4('input')
-            elif tensor_size == 5:
-                self.input_var = T.tensor5('input')
-
-        self.y = T.matrix('truth')
-        self.__init__(self.__dict__['name'],
-                      self.__dict__['input_dimensions'],
-                      self.__dict__['input_var'],
-                      self.__dict__['y'],
-                      self.__dict__['config'],
-                      self.__dict__['input_network'],
-                      self.__dict__['num_classes'],
-                      self.__dict__['activation'],
-                      self.__dict__['pred_activation'],
-                      self.__dict__['optimizer'],
-                      self.__dict__['learning_rate'])
-        lasagne.layers.set_all_param_values(self.layers,
-                                            params[1],
-                                            **{self.name: True})
-
-    def save_model(self, save_path='models'):
-        """
-        Will save the model parameters to a npz file.
-
-        Args:
-            save_path: the location where you want to save the params
-        """
-        if self.input_network is not None:
-            if not hasattr(self.input_network['network'], 'save_name'):
-                self.input_network['network'].save_model()
-
-        if not os.path.exists(save_path):
-            print('Path not found, creating {}'.format(save_path))
-            os.makedirs(save_path)
-        file_path = os.path.join(save_path, "{}{}".format(self.timestamp,
-                                                          self.name))
-        self.save_name = '{}.network'.format(file_path)
-        print('Saving model as: {}'.format(self.save_name))
-
-        with open(self.save_name, 'wb') as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-        self.save_metadata(file_path)
-
-    @classmethod
-    def load_model(cls, load_path):
-        """
-        Will load the model parameters from npz file.
-
-        Args:
-            load_path: the exact location where the model has been saved.
-        """
-        print('Loading model from: {}'.format(load_path))
-        with open(load_path, 'rb') as f:
-            instance = pickle.load(f)
-        return instance
-
-    def save_record(self, save_path='records'):
-        """
-        Will save the training records to file to be loaded up later.
-
-        Args:
-            save_path: the location where you want to save the records
-        """
-        if self.record is not None:
-            if not os.path.exists(save_path):
-                print('Path not found, creating {}'.format(save_path))
-                os.makedirs(save_path)
-
-            file_path = os.path.join(save_path, "{}{}".format(self.timestamp,
-                                                              self.name))
-            print('Saving records as: {}_stats.pickle'.format(file_path))
-            with open('{}_stats.pickle'.format(file_path), 'w') as output:
-                pickle.dump(self.record, output, -1)
-        else:
-            print("No record to save. Train the model first.")
-
-    def save_metadata(self, file_path='models'):
-        """
-        Will save network configuration alongside weights.
-
-        Args:
-            file_path: the npz file path without the npz
-        """
-        config = {
-            "{}".format(file_path): {
-                "input_dimensions": self.input_dimensions,
-                "input_var": "{}".format(self.input_var.type),
-                "y": "{}".format(self.y.type),
-                "config": self.config,
-                "num_classes": self.num_classes,
-                "input_network": {
-                    'network': None,
-                    'layer': None
-                }
-            }
-        }
-
-        if self.input_network:
-            config["{}".format(file_path)]["input_network"]['network'] = \
-                self.input_network['network'].save_name
-            config["{}".format(file_path)]["input_network"]['layer'] = \
-                self.input_network['layer']
-
-        json_file = "{}_metadata.json".format(file_path)
-        print('Saving metadata to {}'.format(json_file))
-        with open(json_file, 'w') as f:
-            json.dump(config, f)
-
 
 if __name__ == "__main__":
     pass
