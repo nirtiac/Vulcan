@@ -82,9 +82,11 @@ class Network(object):
         #             )
         #         )
         self.num_classes = num_classes
+
         #TODO: really this should be named
         #TODO: change the dimension hackkkkkk
         self.feature_columns = [tf.feature_column.numeric_column(key=str(x)) for x in range(self.input_dimensions[1])]
+
         #TODO: this whole structure and param passing are dumb
         model_function = self.make_model_function()
 
@@ -148,7 +150,8 @@ class Network(object):
             assert mode == tf.estimator.ModeKeys.TRAIN
 
             print "calling the train"
-            #TODO: need to pass the learning rate var appropriately!
+
+            #TODO: need to pass the learning rate var appropriately! PRIYA
             if self.optimizer == 'adam':
                 optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
             elif self.optimizer == 'sgd':
@@ -235,7 +238,7 @@ class Network(object):
 
         network = tf.feature_column.input_layer(features, self.feature_columns)
 
-        #TODO: you probably have to do something different for selu?? check.
+        #TODO: you probably have to do something different for selu?? check. PRIYA
         #TODO: name layers?
         for i, (num_units, prob_dropout) in enumerate(zip(units, dropouts)):
             network = tf.layers.dense(network, units=num_units, activation=nonlinearity)
@@ -352,7 +355,7 @@ class Network(object):
             best_accuracy = 0.0
 
         #TODO: catch all the errors!!!
-        #TODO: need to be able to update the learning rate. I think you need to make it a tensor object in your model fun optimizer
+        #TODO: need to be able to update the learning rate. I think you need to make it a tensor object in your model fun optimizer PRIYA
         #https://stackoverflow.com/questions/33919948/how-to-set-adaptive-learning-rate-for-gradientdescentoptimizer
         #https://github.com/tensorflow/tensorflow/issues/2198
 
@@ -370,7 +373,7 @@ class Network(object):
                 self.classifier.train(input_fn=lambda:self.train_input_fn(train_x_dict, train_y, batch_ratio))
 
 
-                #TODO: somehow get percentage batch finished
+                #TODO: somehow get percentage batch finished PRIYA
 
 
                 #TODO: do we need to provide a value to the steps parameter?
@@ -385,6 +388,8 @@ class Network(object):
                 validation_error = val_eval_result["loss"]
                 validation_accuracy = val_eval_result['accuracy']
 
+
+                #TODO PRIYA see Roberts comments on my pull request.
                 if self.stopping_rule == 'best_validation_error' and validation_error < best_error:
                     #best_state = self.__getstate__() #TODO: this is probably gonna break....
                     best_epoch = epoch
@@ -420,7 +425,6 @@ class Network(object):
                     int(minute),
                     int(second)))
 
-
         except KeyboardInterrupt:
             print("\n\n**********Training stopped prematurely.**********\n\n")
 
@@ -437,5 +441,7 @@ class Network(object):
 
             self.tf_is_training = False #TODO: actually make sure this makes sense.
 
+
+#TODO: PRIYA save functions providing the same function signature as previously
 if __name__ == "__main__":
     pass
