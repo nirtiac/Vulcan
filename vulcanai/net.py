@@ -83,7 +83,8 @@ class Network(object):
         #         )
         self.num_classes = num_classes
         #TODO: really this should be named
-        self.feature_columns = [tf.feature_column.numeric_column(key=x) for x in range(self.dimensions)]
+        #TODO: change the dimension hackkkkkk
+        self.feature_columns = [tf.feature_column.numeric_column(key=x) for x in range(self.input_dimensions[1])]
 
         #TODO: this whole structure and param passing are dumb
         model_function = self.make_model_function()
@@ -112,25 +113,27 @@ class Network(object):
 
             network = self.create_network(features, config=self.config, nonlinearity=activations[self.activation]) #TODO: better off as a function call? arghhh
 
+            print network
             predicted_classes = tf.argmax(network, 1)
 
             #TODO: reimplement this
-            # if mode == tf.estimator.ModeKeys.PREDICT:
-            #     predictions = {
-            #         'class_ids': predicted_classes[:, tf.newaxis],
-            #         'probabilities': tf.nn.softmax(network),
-            #         'logits': network,
-            #     }
-            #     return tf.estimator.EstimatorSpec(mode, predictions=predictions)
+            if mode == tf.estimator.ModeKeys.PREDICT:
+                predictions = {
+                    'class_ids': predicted_classes[:, tf.newaxis],
+                    'probabilities': tf.nn.softmax(network),
+                    'logits': network,
+                }
+                return tf.estimator.EstimatorSpec(mode, predictions=predictions)
 
             if self.num_classes is None or self.num_classes == 0:
                 loss = tf.losses.mean_squared_error(labels=labels, logits=network)
 
             else:
-                loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=network)
+                loss = tf.losses.softmax_cross_entropy(onehot_labels=labels, logits=network) #TODO: maybe not one_hot??
 
             # Compute evaluation metrics.
             # TODO: can configure this.
+            print predicted_classes
             accuracy = tf.metrics.accuracy(labels=labels,
                                            predictions=predicted_classes,
                                            name='acc_op')
@@ -156,7 +159,7 @@ class Network(object):
 
             train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step()) #TODO: work with global step for stopped.
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
-
+        return my_model
 
     def create_network(self, features, config, nonlinearity):
         """
@@ -228,7 +231,9 @@ class Network(object):
 
         #TODO: where features is a mapping from key to tensor and features columns is an iterable
         #TODO: actually get this from init params
-        network = tf.feature_column.input_layer(features, self.feature_columns)
+
+
+        network = tf.layers.dense(features, self.input_dimensions) #TODO: this is almost definitely wrong
 
         #TODO: you probably have to do something different for selu?? check.
         #TODO: name layers?
@@ -271,7 +276,8 @@ class Network(object):
         # Convert the inputs to a Dataset.
         dataset = tf.data.Dataset.from_tensor_slices(inputs)
 
-        batch_size = self.input_dimensions * batch_ratio #TODO: better check this is right
+        #TODO: fix this hack self.input_dimensions[1]
+        batch_size = int(self.input_dimensions[1] * batch_ratio) #TODO: better check this is right
 
         # Batch the examples
         assert batch_size is not None, "batch_size must not be None"
@@ -287,7 +293,8 @@ class Network(object):
         # Convert the inputs to a Dataset.
         dataset = tf.data.Dataset.from_tensor_slices((features, labels)) #TODO: this will probably break
 
-        batch_size = self.input_dimensions * batch_ratio #TODO: better check this is right
+        #TODO: fix this hack self.input_dimensions[1]
+        batch_size = int(self.input_dimensions[1] * batch_ratio) #TODO: better check this is right
 
         # Shuffle, repeat, and batch the examples.
         dataset = dataset.shuffle(1000).repeat().batch(batch_size)
@@ -373,12 +380,12 @@ class Network(object):
                 validation_accuracy = val_eval_result['accuracy']
 
                 if self.stopping_rule == 'best_validation_error' and validation_error < best_error:
-                    best_state = self.__getstate__() #TODO: this is probably gonna break....
+                    #best_state = self.__getstate__() #TODO: this is probably gonna break....
                     best_epoch = epoch
                     best_error = validation_error
 
                 elif self.stopping_rule == 'best_validation_accuracy' and validation_accuracy > best_accuracy:
-                    best_state = self.__getstate__() #TODO: this is probably gonna break
+                    #best_state = self.__getstate__() #TODO: this is probably gonna break
                     best_epoch = epoch
                     best_accuracy = validation_accuracy
 
@@ -416,11 +423,11 @@ class Network(object):
 
             if self.stopping_rule == 'best_validation_error':
                 print("STOPPING RULE: Rewinding to epoch {} which had the lowest validation error: {}\n".format(best_epoch, best_error))
-                self.__setstate__(best_state)
+                #self.__setstate__(best_state)
 
             elif self.stopping_rule == 'best_validation_accuracy':
                 print("STOPPING RULE: Rewinding to epoch {} which had the highest validation accuracy: {}\n".format(best_epoch, best_accuracy))
-                self.__setstate__(best_state)
+                #self.__setstate__(best_state)
 
             self.tf_is_training = False #TODO: actually make sure this makes sense.
 

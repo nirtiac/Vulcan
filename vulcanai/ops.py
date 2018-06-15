@@ -4,7 +4,7 @@ import tensorflow as tf #TODO: import less
 activations = {
     "sigmoid": tf.nn.sigmoid,
     "softmax": tf.nn.softmax,
-    "rectify": tf.nn.rectify,
+    "rectify": tf.nn.relu, #TODO: this is it right?
     "selu": tf.nn.selu
 }
 
