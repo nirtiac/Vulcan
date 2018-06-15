@@ -8,7 +8,8 @@ activations = {
     "selu": tf.nn.selu
 }
 
+#TODO: kinda dumb
 optimizers = {
-    "sgd": sgd,
-    "adam": adam
+    "sgd": "sgd",
+    "adam": "adam"
 }

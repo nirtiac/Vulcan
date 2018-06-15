@@ -1,8 +1,8 @@
 import numpy as np
 
-from vulcanai.net import Network
+import tensorflow as tf
 
-import theano.tensor as T
+from vulcanai.net import Network
 
 from vulcanai.utils import get_one_hot
 
@@ -12,14 +12,18 @@ from vulcanai.model_tests import run_test
 
 (train_images, train_labels, test_images, test_labels) = mnist_loader.load_fashion_mnist()
 
+#TODO: how are feature names passed??? would be nice to do it as feature_columns as seen here:
+    # Feature columns describe how to use the input.
+
+    #my_feature_columns = []
+    #for key in train_x.keys():
+    #    my_feature_columns.append(tf.feature_column.numeric_column(key=key))
+
 train_labels = get_one_hot(train_labels)
 
-input_var = T.fmatrix('input')
-y = T.fmatrix('truth')
-
-# TODO: here you turn this into the data... ideally you would write function in net.py that does this easily...
-# but whatever
-
+#TODO: will need to be dealt with differently when stitching networks.
+input_var = None
+y = "Something" #TODO: just a placeholder, need to figure out what to do with it
 
 network_dense_config = {
     'mode': 'dense',
@@ -49,6 +53,7 @@ dense_net.train(
     val_y=train_labels[50000:60000],
     batch_ratio=0.05,
     plot=True
+
 )
 
 dense_net.save_record()

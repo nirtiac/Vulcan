@@ -11,7 +11,6 @@ from ops import activations, optimizers
 
 sys.setrecursionlimit(5000)
 
-
 class Network(object):
     """Class to generate networks and train them."""
 
@@ -41,9 +40,9 @@ class Network(object):
         #TODO: figure out how to deal with input_network.layer
         self.name = name
         self.layers = []
-        self.cost = None
-        self.val_cost = None
-        self.input_dimensions = dimensions
+        #self.cost = None
+        #self.val_cost = None #TODO: figure out if you really need these.
+        self.input_dimensions = dimensions #TODO: I think for non-numeric this needs to contain more info
         self.config = config
         self.learning_rate = learning_rate
         self.init_learning_rate = learning_rate
@@ -64,32 +63,14 @@ class Network(object):
         self.optimizer = optimizer
         self.input_var = input_var
         self.y = y
-        self.input_network = None #input_network #TODO: undo this, deal with input networks
+        self.input_network = None  #TODO: undo this, deal with input networks
         self.input_params = None
-        #input network is dictionary
-
         # if self.input_network is not None:
         #     if self.input_network.get('network', False) is not False and \
         #        self.input_network.get('layer', False) is not False and \
         #        self.input_network.get('get_params', None) is not None:
-        #             pass  #TODO
-        #
-        #
-        #
-        #         # self.input_var = lasagne.layers.get_all_layers(
-        #         #     self.input_network['network']
-        #         # )[0].input_var
-        #         #
-        #         # self.input_dimensions = lasagne.layers.get_output_shape(
-        #         #     self.input_network['network'].layers[
-        #         #         self.input_network['layer']
-        #         #     ]
-        #         # )
-        #
-        #
-        #         # if self.input_network.get('get_params', False):
-        #         #     self.input_params = self.input_network['network'].params
-        #
+        #             pass  #TODO insert the tensorflow stuff here
+
         #     else:
         #         raise ValueError(
         #             'input_network for {} requires {{ network: type Network,'
@@ -99,12 +80,13 @@ class Network(object):
         #             )
         #         )
         self.num_classes = num_classes
+
         self.network = self.create_network(
             config=self.config,
             nonlinearity=activations[self.activation]
         )
         if self.y is not None:
-            self.trainer = self.create_trainer() #TODO: here we probably don't want to pass a function.... but we do need to provide access... so something that calls the estimator with the appropriate mode.
+            self.trainer = self.create_trainer()
             self.validator = self.create_validator()
 
         #TODO: here we create our my_model function
@@ -122,12 +104,12 @@ class Network(object):
         })
 
         #so this is like predictions?? confused.
-        self.output = theano.function(
-            [i for i in [self.input_var] if i],
-            lasagne.layers.get_output(self.network, deterministic=True))
+        # self.output = theano.function(
+        #     [i for i in [self.input_var] if i],
+        #     lasagne.layers.get_output(self.network, deterministic=True))
 
         self.record = None
-
+        self.tf_is_training = False
         try:
             self.timestamp
         except AttributeError:
@@ -139,26 +121,29 @@ class Network(object):
 
         #alternatively make this a private top-level function...
         #could also call helper functions inside here...
-        def my_model(features, labels, mode, params, units, dropouts, nonlinearity):
-            """Modeled on Tensorflow examples."""
+        def my_model(features, labels, mode):
 
-            network = self.network #TODO: confirm really this is a reference to the last layer #
-            # Compute logits (1 per class).
+            network = self.network #TODO: better off as a function call? arghhh
 
-            # Compute predictions.
             predicted_classes = tf.argmax(network, 1)
-            if mode == tf.estimator.ModeKeys.PREDICT:
-                predictions = {
-                    'class_ids': predicted_classes[:, tf.newaxis],
-                    'probabilities': tf.nn.softmax(network),
-                    'logits': network,
-                }
-                return tf.estimator.EstimatorSpec(mode, predictions=predictions)
 
-            #logits is such a confusing name
-            loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=network)
+            #TODO: reimplement this
+            # if mode == tf.estimator.ModeKeys.PREDICT:
+            #     predictions = {
+            #         'class_ids': predicted_classes[:, tf.newaxis],
+            #         'probabilities': tf.nn.softmax(network),
+            #         'logits': network,
+            #     }
+            #     return tf.estimator.EstimatorSpec(mode, predictions=predictions)
+
+            if self.num_classes is None or self.num_classes == 0:
+                loss = tf.losses.mean_squared_error(labels=labels, logits=network)
+
+            else:
+                loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=network)
 
             # Compute evaluation metrics.
+            # TODO: can configure this.
             accuracy = tf.metrics.accuracy(labels=labels,
                                            predictions=predicted_classes,
                                            name='acc_op')
@@ -170,9 +155,19 @@ class Network(object):
                     mode, loss=loss, eval_metric_ops=metrics)
 
             # Create training op.
+            #this was taken from the internetz. I assume it's so an exception is thrown instead of return
+            #don't really like it, but can change later.
             assert mode == tf.estimator.ModeKeys.TRAIN
 
-            optimizer = tf.train.AdagradOptimizer(learning_rate=0.1)
+            #TODO: need to pass the learning rate var appropriately!
+            if self.optimizer == 'adam':
+                optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
+            elif self.optimizer == 'sgd':
+                optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
+            else:
+                updates = None
+                ValueError("No optizer found") #TODO my goodness make sure you're still passing things
+
             train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
 
@@ -245,13 +240,13 @@ class Network(object):
         #TODO: here integrate the whole input network thing
 
         #TODO: where features is a mapping from key to tensor and features columns is an iterable
+        #TODO: actually get this from init params
         network = tf.feature_column.input_layer(self.features, self.params['feature_columns'])
 
         #TODO: you probably have to do something different for selu?? check.
         #TODO: name layers?
         for i, (num_units, prob_dropout) in enumerate(zip(units, dropouts)):
             network = tf.layers.dense(network, units=num_units, activation=nonlinearity)
-            #TODO: need to create this training switch and pass it appropriately....
             network = tf.layers.dropout(network, rate=prob_dropout, training=self.tf_is_training)
 
         return network
@@ -290,83 +285,6 @@ class Network(object):
         return lasagne.objectives.squared_error(prediction, y).mean()
 
 
-#taken from
-def train_input_fn(features, labels, batch_size):
-    """An input function for training"""
-    # Convert the inputs to a Dataset.
-    dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels))
-
-    # Shuffle, repeat, and batch the examples.
-    dataset = dataset.shuffle(1000).repeat().batch(batch_size)
-
-    # Return the dataset.
-    return dataset
-    def create_trainer(self):
-        """
-        Generate a theano function to train the network.
-
-        Returns: theano function that takes as input (train_x,train_y)
-                 and trains the net
-        """
-
-        classifier.train(input_fn=lambda:iris_data.train_input_fn(train_x, train_y, args.batch_size),
-        steps=args.train_steps)
-
-
-
-    # def create_trainer(self):
-    #     """
-    #     Generate a theano function to train the network.
-    #
-    #     Returns: theano function that takes as input (train_x,train_y)
-    #              and trains the net
-    #     """
-    #     print("Creating {} Trainer...".format(self.name))
-    #     # get network output
-    #     out = lasagne.layers.get_output(self.network)
-    #     # get all trainable parameters from network
-    #
-    #     self.params = lasagne.layers.get_all_params(
-    #         self.network,
-    #         trainable=True,
-    #         **{self.name: True}
-    #     )
-    #     if self.input_params is not None:
-    #         self.params = self.input_params + self.params
-    #
-    #     # calculate a loss function which has to be a scalar
-    #     if self.cost is None:
-    #         if self.num_classes is None or self.num_classes == 0:
-    #             self.cost = self.mse_loss(out, self.y)
-    #         else:
-    #             self.cost = self.cross_entropy_loss(out, self.y)
-    #
-    #     # calculate updates using ADAM optimization gradient descent
-    #     learning_rate_var = T.scalar(name='learning_rate')
-    #     if self.optimizer == 'adam':
-    #         updates = optimizers[self.optimizer](
-    #             loss_or_grads=self.cost,
-    #             params=self.params,
-    #             learning_rate=learning_rate_var,
-    #             beta1=0.9,
-    #             beta2=0.999,
-    #             epsilon=1e-08
-    #         )
-    #     elif self.optimizer == 'sgd':
-    #         updates = optimizers[self.optimizer](
-    #             loss_or_grads=self.cost,
-    #             params=self.params,
-    #             learning_rate=learning_rate_var
-    #         )
-    #     else:
-    #         updates = None
-    #         ValueError("No optimizer found")
-    #
-    #     # omitted (, allow_input_downcast=True)
-    #     return theano.function(
-    #         [i for i in [self.input_var, self.y, learning_rate_var] if i],
-    #         updates=updates
-    #     )
 
     def create_validator(self):
         """
@@ -421,6 +339,48 @@ def train_input_fn(features, labels, batch_size):
             return self.output(input_data)
 
 
+    #TODO: actually put this in __init__ of the model
+    #taken from https://github.com/tensorflow/models/blob/master/samples/core/get_started/iris_data.py
+    def create_trainer(features, labels, batch_size):
+        """An input function for training"""
+        # Convert the inputs to a Dataset.
+        dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels))
+
+        # Shuffle, repeat, and batch the examples.
+        #TODO: This is actually a batch ratio!
+        dataset = dataset.shuffle(1000).repeat().batch(batch_size)
+
+        # Return the dataset.
+        return dataset
+
+    #taken from https://github.com/tensorflow/models/blob/master/samples/core/get_started/iris_data.py
+    def create_validator(features, labels, batch_size):
+        """An input function for evaluation or prediction"""
+
+
+
+
+                eval_result = self.classifier.evaluate(
+        input_fn=lambda:self.eval_input_fn(test_x, test_y, args.batch_size))
+
+        features=dict(features)
+        if labels is None:
+            # No labels, use only features.
+            inputs = features
+        else:
+            inputs = (features, labels)
+
+        # Convert the inputs to a Dataset.
+        dataset = tf.data.Dataset.from_tensor_slices(inputs)
+
+        # Batch the examples
+        assert batch_size is not None, "batch_size must not be None"
+        dataset = dataset.batch(batch_size)
+
+        # Return the dataset.
+        return dataset
+
+
     def train(self, epochs, train_x, train_y, val_x, val_y,
               batch_ratio=0.1, plot=True, change_rate=None):
         """
@@ -437,31 +397,14 @@ def train_input_fn(features, labels, batch_size):
             change_rate: a function that updates learning rate (takes an alpha, returns an alpha)'
 
         """
-
-    def train(self, epochs, train_x, train_y, val_x, val_y,
-              batch_ratio=0.1, plot=True, change_rate=None):
-        """
-        Train the network.
-
-        Args:
-            epochs: how many times to iterate over the training data
-            train_x: the training data
-            train_y: the training truth
-            val_x: the validation data (should not be also in train_x)
-            val_y: the validation truth (should not be also in train_y)
-            batch_ratio: the percent (0-1) of how much data a batch should have
-            plot: If True, plot performance during training
-            change_rate: a function that updates learning rate (takes an alpha, returns an alpha)'
-
-        """
-
-        #TODO: figure out how to integrate the change rate
 
         print('\nTraining {} in progress...\n'.format(self.name))
+        self.tf_is_training = True #for dropout
 
         if batch_ratio > 1:
             batch_ratio = 1
         batch_ratio = float(batch_ratio)
+
 
         self.record = dict(
             epoch=[],
@@ -481,72 +424,34 @@ def train_input_fn(features, labels, batch_size):
             best_epoch = None
             best_accuracy = 0.0
 
-        output_shape = lasagne.layers.get_output_shape(self.network)
-        if output_shape[1:] != train_y.shape[1:]:
-            raise ValueError(
-                'Shape mismatch: non-batch dimensions don\'t match.'
-                '\n\tNetwork output shape: {}'
-                '\n\tLabel shape (train_y): {}'.format(
-                    output_shape,
-                    train_y.shape))
+        #TODO: catch all the errors!!!
+        #TODO: need to be able to update the learning rate. I think you need to make it a tensor object in your model fun optimizer
+        #https://stackoverflow.com/questions/33919948/how-to-set-adaptive-learning-rate-for-gradientdescentoptimizer
 
-        if train_x.shape[0] * batch_ratio < 1.0:
-            batch_ratio = 1.0 / train_x.shape[0]
-            print('Warning: Batch ratio too small. Changing to {:.5f}'.format(batch_ratio))
+
         try:
-            if plot:
-                fig_number = plt.gcf().number + 1 if plt.fignum_exists(1) else 1
-
             for epoch in range(epochs):
                 epoch_time = time.time()
                 print("--> Epoch: {}/{}".format(
-                    epoch,
-                    epochs - 1
+                        epoch,
+                        epochs - 1
                 ))
 
-                train_x, train_y = shuffle(train_x, train_y, random_state=0)
-
-                for i in range(int(1 / batch_ratio)):
-                    size = train_x.shape[0]
-                    b_x = train_x[int(size * (i * batch_ratio)):
-                                  int(size * ((i + 1) * batch_ratio))]
-                    b_y = train_y[int(size * (i * batch_ratio)):
-                                  int(size * ((i + 1) * batch_ratio))]
-
-                    self.trainer(b_x, b_y, self.learning_rate)
-
-                    sys.stdout.flush()
-                    sys.stdout.write('\r\tDone {:.1f}% of the epoch'.format
-                                     (100 * (i + 1) * batch_ratio))
-
-                    if change_rate is not None:
-                        if not callable(change_rate):
-                            raise ValueError(
-                                'Parameter change_rate must be a function '
-                                'that returns a new learning rate. '
-                                'Learning rate remains unchanged.'
-                            )
-                        # print('Modifying learning rate from {}'.format(
-                        #     self.learning_rate)
-                        # ),
-                        self.learning_rate = change_rate(
-                            self.init_learning_rate,
-                            self.minibatch_iteration
-                        )
-                        # print('to {}'.format(self.learning_rate))
-                    self.minibatch_iteration += 1
+                #TODO: do we need to provide a value to the steps parameter?
+                #https://github.com/tensorflow/tensorflow/blob/r1.8/tensorflow/python/estimator/estimator.py
+                #TODO: make this into a function!
+                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x, train_y, batch_ratio))
 
                 train_error, train_accuracy = self.validator(train_x, train_y)
-                validation_error, validation_accuracy = self.validator(val_x,
-                                                                       val_y)
+                validation_error, validation_accuracy = self.validator(val_x,val_y)
 
                 if self.stopping_rule == 'best_validation_error' and validation_error < best_error:
-                    #best_state = self.__getstate__()
+                    best_state = self.__getstate__() #TODO: this is probably gonna break....
                     best_epoch = epoch
                     best_error = validation_error
 
                 elif self.stopping_rule == 'best_validation_accuracy' and validation_accuracy > best_accuracy:
-                    #best_state = self.__getstate__()
+                    best_state = self.__getstate__() #TODO: this is probably gonna break
                     best_epoch = epoch
                     best_accuracy = validation_accuracy
 
@@ -556,10 +461,12 @@ def train_input_fn(features, labels, batch_size):
                 self.record['validation_error'].append(validation_error)
                 self.record['validation_accuracy'].append(validation_accuracy)
                 epoch_time_spent = time.time() - epoch_time
+
                 print("\n\ttrain error: {:.6f} |"" train accuracy: {:.6f} in {:.2f}s".format(
                     float(train_error),
                     float(train_accuracy),
                     epoch_time_spent))
+
                 print("\tvalid error: {:.6f} | valid accuracy: {:.6f} in {:.2f}s".format(
                     float(validation_error),
                     float(validation_accuracy),
@@ -573,15 +480,10 @@ def train_input_fn(features, labels, batch_size):
                     int(minute),
                     int(second)))
 
-                if plot:
-                    plt.ion()
-                    plt.figure(fig_number)
-                    display_record(record=self.record)
-
-
 
         except KeyboardInterrupt:
             print("\n\n**********Training stopped prematurely.**********\n\n")
+
         finally:
             self.timestamp = get_timestamp()
 
@@ -593,6 +495,7 @@ def train_input_fn(features, labels, batch_size):
                 print("STOPPING RULE: Rewinding to epoch {} which had the highest validation accuracy: {}\n".format(best_epoch, best_accuracy))
                 self.__setstate__(best_state)
 
+            self.tf_is_training = False #TODO: actually make sure this makes sense.
 
     def __getstate__(self):
         """Pickle save config."""
