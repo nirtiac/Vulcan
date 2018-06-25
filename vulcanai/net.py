@@ -8,15 +8,17 @@ import numpy as np
 import tensorflow as tf
 from utils import get_timestamp
 from ops import activations, optimizers
-from sklearn.utils import shuffle
+from selu import alpha_dropout
 
-from utils import get_one_hot
 sys.setrecursionlimit(5000)
+
+tf.logging.set_verbosity(tf.logging.INFO)
+
 
 class Network(object):
     """Class to generate networks and train them."""
 
-    def __init__(self, name, dimensions, input_var, y, config,
+    def __init__(self, name, dimensions, input_var, y, config, feature_columns, model_path,
                  input_network=None, num_classes=None, activation='rectify',
                  pred_activation='softmax', optimizer='adam', stopping_rule='best_validation_error',
                  learning_rate=0.001):
@@ -30,6 +32,7 @@ class Network(object):
             input_var: tf tensor representing input matrix
             y: tf tensor representing truth matrix
             config: Network configuration (as dict)
+            feature_columns: a list of feature columns as defined by tensorflow
             input_network: None or a dictionary containing keys (network, layer).
                 network: a Network object
                 layer: an integer corresponding to the layer you want output
@@ -83,14 +86,13 @@ class Network(object):
         #         )
         self.num_classes = num_classes
 
-        #TODO: really this should be named
-        #TODO: change the dimension hackkkkkk
-        self.feature_columns = [tf.feature_column.numeric_column(key=str(x)) for x in range(self.input_dimensions[1])]
+        self.feature_columns = feature_columns
 
-        #TODO: this whole structure and param passing are dumb
+        self.model_path = model_path
+
         model_function = self.make_model_function()
 
-        self.classifier = tf.estimator.Estimator(model_fn=model_function)
+        self.classifier = tf.estimator.Estimator(model_fn=model_function, model_dir=self.model_path)
 
         #so this is like predictions?? confused.
         # self.output = theano.function(
@@ -103,64 +105,56 @@ class Network(object):
             self.timestamp
         except AttributeError:
             self.timestamp = get_timestamp()
-        self.minibatch_iteration = 0 #TODO: may need to change depending on what functions are called
-
 
     def make_model_function(self):
 
-        #alternatively make this a "private" top-level function...
-        #could also call helper functions inside here...
         def my_model(features, labels, mode):
 
-            network = self.create_network(features, config=self.config, nonlinearity=activations[self.activation]) #TODO: better off as a function call? arghhh
+            network = self.create_network(features, config=self.config, nonlinearity=activations[self.activation])
 
-            predicted_classes = tf.one_hot(tf.argmax(network, 1), self.num_classes) #TODO: check this is translating correctly
+            predicted_classes = tf.argmax(network, 1)
             print predicted_classes
-
-            #TODO: reimplement this
-            if mode == tf.estimator.ModeKeys.PREDICT:
-                predictions = {
-                    'class_ids': predicted_classes[:, tf.newaxis],
-                    'probabilities': tf.nn.softmax(network),
+            predictions = {
+                    'class_ids': predicted_classes,
+                    'probabilities': tf.nn.softmax(network, name="softmax_tensor"),
                     'logits': network,
                 }
-                return tf.estimator.EstimatorSpec(mode, predictions=predictions)
+            if mode == tf.estimator.ModeKeys.PREDICT:
 
+                return tf.estimator.EstimatorSpec(mode, predictions=predictions)
             if self.num_classes is None or self.num_classes == 0:
                 loss = tf.losses.mean_squared_error(labels=labels, logits=network)
 
             else:
-                loss = tf.losses.softmax_cross_entropy(onehot_labels=labels, logits=network) #TODO: maybe not one_hot??
+                loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=network) #TODO: check sparse
 
-            # Compute evaluation metrics.
-            # TODO: can configure this.
             accuracy = tf.metrics.accuracy(labels=labels,
                                            predictions=predicted_classes,
                                            name='acc_op')
+
             metrics = {'accuracy': accuracy}
-            tf.summary.scalar('accuracy', accuracy[1])
 
             if mode == tf.estimator.ModeKeys.EVAL:
                 return tf.estimator.EstimatorSpec(
                     mode, loss=loss, eval_metric_ops=metrics)
 
-            # Create training op.
-            #this was taken from the internetz. I assume it's so an exception is thrown instead of return
-            #don't really like it, but can change later.
             assert mode == tf.estimator.ModeKeys.TRAIN
 
-            print "calling the train"
-
-            #TODO: need to pass the learning rate var appropriately! PRIYA
+            #TODO: fix learning rate
             if self.optimizer == 'adam':
-                optimizer = tf.train.AdamOptimizer(learning_rate=0.1)
+                optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
             elif self.optimizer == 'sgd':
-                optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.1)
+                optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.learning_rate)
             else:
-                ValueError("No optizer found") #TODO my goodness make sure you're still passing things
+                ValueError("No optimizer found")
 
-            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step()) #TODO: work with global step for stopped.
+            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+
+            #sets the tensorboard scalar accuracy
+            tf.summary.scalar('accuracy', accuracy[1])
+
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
+
         return my_model
 
     def create_network(self, features, config, nonlinearity):
@@ -186,28 +180,26 @@ class Network(object):
                 nonlinearity=nonlinearity
             )
 
-        # elif mode == 'conv':
-        #     jsonschema.validate(config, schemas.conv_network)
-        #     network = self.create_conv_network(
-        #         filters=config.get('filters'),
-        #         filter_size=config.get('filter_size'),
-        #         stride=config.get('stride'),
-        #         pool_mode=config['pool'].get('mode'),
-        #         pool_stride=config['pool'].get('stride'),
-        #         nonlinearity=nonlinearity
-        #     )
+        elif mode == 'conv':
+            jsonschema.validate(config, schemas.conv_network)
+            network = self.create_conv_network(
+                filters=config.get('filters'),
+                filter_size=config.get('filter_size'),
+                stride=config.get('stride'),
+                pool_mode=config['pool'].get('mode'),
+                pool_stride=config['pool'].get('stride'),
+                nonlinearity=nonlinearity
+            )
         else:
             raise ValueError('Mode {} not supported.'.format(mode))
-
-        if self.num_classes is not None and self.num_classes != 0:
-            network = self.create_classification_layer(
-                network,
-                num_classes=self.num_classes,
-                nonlinearity=activations[self.pred_activation]
-            )
+        #TODO: check this is in the right place
+        network = self.create_classification_layer(network, nonlinearity=activations[self.pred_activation])
 
         return network
 
+    def create_classification_layer(self, network, nonlinearity):
+
+        logits = tf.layers.dense(network, self.num_classes, activation=nonlinearity, name="classification_layer")
 
     def create_dense_network(self, features, units, dropouts, nonlinearity):
         """
@@ -227,43 +219,17 @@ class Network(object):
                 "Cannot build network: units and dropouts don't correspond"
             )
 
-        #TODO: this should be logger
-        print("Creating {} Network...".format(self.name))
-
-        #TODO: here integrate the whole input network thing
-
-        #TODO: where features is a mapping from key to tensor and features columns is an iterable
-        #TODO: actually get this from init params
-
-
+        #doesn't have a name param
         network = tf.feature_column.input_layer(features, self.feature_columns)
 
-        #TODO: you probably have to do something different for selu?? check. PRIYA
-        #TODO: name layers?
         for i, (num_units, prob_dropout) in enumerate(zip(units, dropouts)):
-            network = tf.layers.dense(network, units=num_units, activation=nonlinearity)
-            network = tf.layers.dropout(network, rate=prob_dropout, training=self.tf_is_training)
 
-        return network
+            network = tf.layers.dense(network, units=num_units, activation=nonlinearity,name = 'dense_layer{}'.format(str(i)))
 
-
-    def create_classification_layer(self, network, num_classes, nonlinearity):
-        """
-        Create a classification layer. Normally used as the last layer.
-
-        Args:
-            network: network you want to append a classification to
-            num_classes: how many classes you want to predict
-            nonlinearity: nonlinearity to use as a string (see DenseLayer)
-
-        Returns: the classification layer appended to all previous layers
-        """
-        print('\tOutput Layer:')
-
-        network = tf.layers.dense(network, num_classes, activation=nonlinearity)
-
-        #TODO: fix this to be whatever it is in tensorflow
-        #print('\t\t{}'.format(lasagne.layers.get_output_shape(network)))
+            if self.activation == "selu":
+                network = alpha_dropout(network, rate=prob_dropout, training=self.tf_is_training, name = 'dropout_layer{}'.format(str(i)))
+            else:
+                network = tf.layers.dropout(network, rate=prob_dropout, training=self.tf_is_training, name = 'dropout_layer{}'.format(str(i)))
 
         return network
 
@@ -272,29 +238,27 @@ class Network(object):
         """An input function for evaluation or prediction"""
         features=dict(features)
         if labels is None:
-            # No labels, use only features.
             inputs = features
         else:
             inputs = (features, labels)
 
-        # Convert the inputs to a Dataset.
         dataset = tf.data.Dataset.from_tensor_slices(inputs)
 
-        #TODO: check correct
         batch_size = int(len(labels) * batch_ratio)
 
-        # Batch the examples
+        if batch_size < 1:
+            batch_size = len(labels)
+
         assert batch_size is not None, "batch_size must not be None"
         dataset = dataset.batch(batch_size)
 
-        # Return the dataset.
         return dataset
 
 
-    #TODO: think about declaring and storing this in advance
+    #TODO: make this flexible for on-demand dataset use
+    #https://github.com/tensorflow/models/blob/master/samples/outreach/blogs/blog_estimators_dataset.py
     def train_input_fn(self, features, labels, batch_ratio):
         """An input function for training"""
-        # Convert the inputs to a Dataset.
         dataset = tf.data.Dataset.from_tensor_slices((dict(features), labels)) #TODO: this will probably break
 
         batch_size = int(len(labels) * batch_ratio)
@@ -302,8 +266,8 @@ class Network(object):
         if batch_size < 1:
             batch_size = len(labels)
 
-        # Shuffle, repeat, and batch the examples.
-        dataset = dataset.shuffle(1000).repeat().batch(batch_size)
+        #TODO set shuffle param?
+        dataset = dataset.shuffle(1000).batch(batch_size)
 
         return dataset
 
@@ -314,7 +278,7 @@ class Network(object):
 
         Args:
             epochs: how many times to iterate over the training data
-            train_x: the training data
+            train_x: the training data, a dictionary of features: tensors
             train_y: the training truth
             val_x: the validation data (should not be also in train_x)
             val_y: the validation truth (should not be also in train_y)
@@ -324,13 +288,9 @@ class Network(object):
 
         """
 
-        print('\nTraining {} in progress...\n'.format(self.name))
-        self.tf_is_training = True #for dropout
-
-
-        train_x_dict = {str(i):v for i, v in enumerate(np.swapaxes(train_x, 0, 1))} #TODO: aawwwkward
-        val_x_dict = {str(i):v for i, v in enumerate(np.swapaxes(val_x, 0, 1))}
-
+        self.tf_is_training = True #for dropout #TODO: check that this works
+        tensors_to_log = {"probabilities": "softmax_tensor"}
+        logging_hook = tf.train.LoggingTensorHook(tensors=tensors_to_log, every_n_iter=50)
 
         if batch_ratio > 1:
             batch_ratio = 1
@@ -345,12 +305,10 @@ class Network(object):
         )
 
         if self.stopping_rule == 'best_validation_error':
-            best_state = None
             best_epoch = None
             best_error = float('inf')
 
         elif self.stopping_rule == 'best_validation_accuracy':
-            best_state = None
             best_epoch = None
             best_accuracy = 0.0
 
@@ -359,44 +317,31 @@ class Network(object):
         #https://stackoverflow.com/questions/33919948/how-to-set-adaptive-learning-rate-for-gradientdescentoptimizer
         #https://github.com/tensorflow/tensorflow/issues/2198
 
+
+        # in the future tf will hopefully have early stopping implemented
+        # https://github.com/tensorflow/tensorflow/issues/18394
+
+        #TODO: actually use this https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate
         try:
+
             for epoch in range(epochs):
                 epoch_time = time.time()
-                print("--> Epoch: {}/{}".format(
-                        epoch,
-                        epochs - 1
-                ))
 
-                #TODO: I think I still need to leave this in?
-                train_x, train_y = shuffle(train_x, train_y, random_state=0)
+                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x, train_y, batch_ratio), hooks=[logging_hook])
 
-                self.classifier.train(input_fn=lambda:self.train_input_fn(train_x_dict, train_y, batch_ratio))
-
-
-                #TODO: somehow get percentage batch finished PRIYA
-
-
-                #TODO: do we need to provide a value to the steps parameter?
-                #https://github.com/tensorflow/tensorflow/blob/r1.8/tensorflow/python/estimator/estimator.py
-                #TODO: make this into a function!
-
-                train_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(train_x_dict, train_y, batch_ratio))
-                val_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(val_x_dict, val_y, batch_ratio))
+                train_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(train_x, train_y, batch_ratio))
+                val_eval_result = self.classifier.evaluate(input_fn=lambda:self.eval_input_fn(val_x, val_y, batch_ratio))
 
                 train_error = train_eval_result["loss"]
                 train_accuracy = train_eval_result["accuracy"]
                 validation_error = val_eval_result["loss"]
                 validation_accuracy = val_eval_result['accuracy']
 
-
-                #TODO PRIYA see Roberts comments on my pull request.
                 if self.stopping_rule == 'best_validation_error' and validation_error < best_error:
-                    #best_state = self.__getstate__() #TODO: this is probably gonna break....
                     best_epoch = epoch
                     best_error = validation_error
 
                 elif self.stopping_rule == 'best_validation_accuracy' and validation_accuracy > best_accuracy:
-                    #best_state = self.__getstate__() #TODO: this is probably gonna break
                     best_epoch = epoch
                     best_accuracy = validation_accuracy
 
@@ -405,6 +350,7 @@ class Network(object):
                 self.record['train_accuracy'].append(train_accuracy)
                 self.record['validation_error'].append(validation_error)
                 self.record['validation_accuracy'].append(validation_accuracy)
+
                 epoch_time_spent = time.time() - epoch_time
 
                 print("\n\ttrain error: {:.6f} |"" train accuracy: {:.6f} in {:.2f}s".format(
